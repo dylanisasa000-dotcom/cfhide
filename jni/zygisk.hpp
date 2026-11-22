@@ -58,14 +58,14 @@ struct Api {
 struct module_abi {
     long api_version;
     ModuleBase *impl;
-    module_abi(ModuleBase *module) : api_version(ZYGISK_API_VERSION), impl(module) {}
 };
 
 } // namespace zygisk
 
 #define REGISTER_ZYGISK_MODULE(cls) \
     extern "C" [[gnu::visibility("default")]] void zygisk_module_entry(zygisk::module_abi *abi) { \
-        new (abi) zygisk::module_abi(new cls()); \
+        abi->api_version = ZYGISK_API_VERSION; \
+        abi->impl = new cls(); \
     } \
     extern "C" [[gnu::visibility("default")]] long zygisk_get_api_version() { \
         return ZYGISK_API_VERSION; \
