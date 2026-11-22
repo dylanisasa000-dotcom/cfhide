@@ -12,11 +12,6 @@
 #include <pthread.h>
 #include "zygisk.hpp"
 
-#ifndef RTLD_DI_LINKMAP
-#define RTLD_DI_LINKMAP 2
-#endif
-extern "C" int dlinfo(void *handle, int request, void *info);
-
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "CFHide", __VA_ARGS__)
 
 using zygisk::Api;
@@ -90,8 +85,10 @@ void* unlink_thread(void*) {
         sleep(1);
     }
     if (!handle) return nullptr;
-    struct link_map *map = nullptr;
-    if (dlinfo(handle, RTLD_DI_LINKMAP, &map) == 0 && map) {
+
+    // En Android (Bionic), el handle de dlopen es directamente el struct link_map
+    struct link_map *map = (struct link_map *)handle;
+    if (map && map->l_prev) {
         if (map->l_prev) map->l_prev->l_next = map->l_next;
         if (map->l_next) map->l_next->l_prev = map->l_prev;
         LOGD("unlinked libb7x_core.so from link_map");
