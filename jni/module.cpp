@@ -21,6 +21,14 @@ static bool in_hook = false;
 static JavaVM* g_vm = nullptr;
 static bool is_target_process = false;
 
+void log_to_file(const char* msg) {
+    FILE* f = fopen("/data/local/tmp/cfhide_debug.txt", "a");
+    if (f) {
+        fprintf(f, "%s\n", msg);
+        fclose(f);
+    }
+}
+
 int my_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
     int fd = (int)syscall(SYS_openat, dirfd, pathname, flags, mode);
     if (fd < 0 || !pathname) return fd;
@@ -84,14 +92,12 @@ void* unlink_thread(void*) {
         if (handle) break;
         sleep(1);
     }
-    if (!handle) return nullptr;
-
-    // En Android (Bionic), el handle de dlopen es directamente el struct link_map
+    if (!handle) { log_to_file("lib not found after 30s"); return nullptr; }
     struct link_map *map = (struct link_map *)handle;
     if (map && map->l_prev) {
         if (map->l_prev) map->l_prev->l_next = map->l_next;
         if (map->l_next) map->l_next->l_prev = map->l_prev;
-        LOGD("unlinked libb7x_core.so from link_map");
+        log_to_file("unlinked libb7x_core.so from link_map");
     }
     return nullptr;
 }
@@ -101,42 +107,64 @@ void* inject_thread(void*) {
     g_vm->AttachCurrentThread(&env, nullptr);
     if (!env) return nullptr;
 
+    log_to_file("inject_thread started");
+
     while (true) {
-        jclass up = env->FindClass("com/unity3d/player/UnityPlayer");
-        if (up) {
-            jfieldID fid = env->GetStaticFieldID(up, "currentActivity", "Landroid/app/Activity;");
-            if (fid) {
-                jobject activity = env->GetStaticObjectField(up, fid);
-                if (activity) {
-                    LOGD("Found UnityPlayer Activity");
-                    jclass classLoaderClass = env->FindClass("dalvik/system/DexClassLoader");
-                    jmethodID constructor = env->GetMethodID(classLoaderClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V");
-                    jstring dexPath = env->NewStringUTF("/data/adb/modules/zygisk_cfhide/classes3.dex");
-                    jstring optimizedDir = env->NewStringUTF("/data/local/tmp/");
-                    jclass clsLoaderClass = env->FindClass("java/lang/ClassLoader");
-                    jmethodID getSystemClassLoader = env->GetStaticMethodID(clsLoaderClass, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
-                    jobject parentLoader = env->CallStaticObjectMethod(clsLoaderClass, getSystemClassLoader);
-                    jobject dexLoader = env->NewObject(classLoaderClass, constructor, dexPath, optimizedDir, nullptr, parentLoader);
+        jclass atClass = env->FindClass("android/app/ActivityThread");
+        if (atClass) {
+            jmethodID currentAT = env->GetStaticMethodID(atClass, "currentActivityThread", "()Landroid/app/ActivityThread;");
+            jobject at = env->CallStaticObjectMethod(atClass, currentAT);
+            if (at) {
+                jmethodID getApp = env->GetMethodID(atClass, "getApplication", "()Landroid/app/Application;");
+                jobject app = env->CallObjectMethod(at, getApp);
+                if (app) {
+                    log_to_file("Found Application context");
+                    jclass ctxClass = env->FindClass("android/content/Context");
+                    jmethodID getCL = env->GetMethodID(ctxClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
+                    jobject cl = env->CallObjectMethod(app, getCL);
                     
-                    jmethodID loadClass = env->GetMethodID(clsLoaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-                    jstring className = env->NewStringUTF("com.platinmods.counterflame.TrainingOverlay");
-                    jclass overlayClass = (jclass)env->CallObjectMethod(dexLoader, loadClass, className);
-                    
-                    if (overlayClass) {
-                        LOGD("Loaded TrainingOverlay class");
-                        jmethodID startMethod = env->GetStaticMethodID(overlayClass, "start", "(Landroid/app/Activity;)V");
-                        if (!startMethod) startMethod = env->GetStaticMethodID(overlayClass, "init", "(Landroid/app/Activity;)V");
-                        if (!startMethod) startMethod = env->GetStaticMethodID(overlayClass, "attach", "(Landroid/app/Activity;)V");
-                        if (!startMethod) startMethod = env->GetStaticMethodID(overlayClass, "setup", "(Landroid/app/Activity;)V");
+                    if (cl) {
+                        log_to_file("Found ClassLoader");
+                        jclass clClass = env->FindClass("java/lang/ClassLoader");
+                        jmethodID loadClass = env->GetMethodID(clClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
                         
-                        if (startMethod) {
-                            env->CallStaticVoidMethod(overlayClass, startMethod, activity);
-                            LOGD("Called TrainingOverlay init");
-                        } else {
-                            LOGD("Could not find init method");
+                        jclass upClass = (jclass)env->CallObjectMethod(cl, loadClass, env->NewStringUTF("com.unity3d.player.UnityPlayer"));
+                        if (upClass) {
+                            log_to_file("Found UnityPlayer class");
+                            jfieldID fid = env->GetStaticFieldID(upClass, "currentActivity", "Landroid/app/Activity;");
+                            if (fid) {
+                                jobject activity = env->GetStaticObjectField(upClass, fid);
+                                if (activity) {
+                                    log_to_file("Found Unity Activity");
+                                    
+                                    jstring dexPath = env->NewStringUTF("/data/adb/modules/zygisk_cfhide/classes3.dex");
+                                    jstring optDir = env->NewStringUTF("/data/local/tmp/");
+                                    jclass dexCLClass = env->FindClass("dalvik/system/DexClassLoader");
+                                    jmethodID dexInit = env->GetMethodID(dexCLClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V");
+                                    jobject dexCL = env->NewObject(dexCLClass, dexInit, dexPath, optDir, nullptr, cl);
+                                    
+                                    jclass overlayClass = (jclass)env->CallObjectMethod(dexCL, loadClass, env->NewStringUTF("com.platinmods.counterflame.TrainingOverlay"));
+                                    if (overlayClass) {
+                                        log_to_file("Loaded TrainingOverlay class");
+                                        jmethodID startM = env->GetStaticMethodID(overlayClass, "start", "(Landroid/app/Activity;)V");
+                                        if (!startM) startM = env->GetStaticMethodID(overlayClass, "init", "(Landroid/app/Activity;)V");
+                                        if (!startM) startM = env->GetStaticMethodID(overlayClass, "attach", "(Landroid/app/Activity;)V");
+                                        if (!startM) startM = env->GetStaticMethodID(overlayClass, "setup", "(Landroid/app/Activity;)V");
+                                        
+                                        if (startM) {
+                                            log_to_file("Called TrainingOverlay init");
+                                            env->CallStaticVoidMethod(overlayClass, startM, activity);
+                                            break;
+                                        } else {
+                                            log_to_file("Could not find init method");
+                                        }
+                                    } else {
+                                        log_to_file("Failed to load TrainingOverlay class");
+                                    }
+                                }
+                            }
                         }
                     }
-                    break;
                 }
             }
         }
@@ -151,7 +179,7 @@ public:
     void onLoad(Api *api, JNIEnv *env) override {
         this->api = api;
         env->GetJavaVM(&g_vm);
-        LOGD("CFHide loaded in Zygote!");
+        log_to_file("onLoad called");
     }
     void preAppSpecialize(AppSpecializeArgs *args) override {
         if (!args->nice_name) return;
@@ -160,9 +188,9 @@ public:
         const char *nice = env->GetStringUTFChars(args->nice_name, nullptr);
         
         if (nice) {
-            LOGD("Zygisk process: %s", nice);
+            log_to_file(nice);
             if (strstr(nice, "com.ScarletWork") != nullptr) {
-                LOGD("Target process found!");
+                log_to_file("Target process found!");
                 is_target_process = true;
             }
             env->ReleaseStringUTFChars(args->nice_name, nice);
@@ -180,7 +208,7 @@ public:
 
     void postAppSpecialize(const AppSpecializeArgs *args) override {
         if (is_target_process) {
-            LOGD("PostAppSpecialize reached. Starting injector...");
+            log_to_file("postAppSpecialize reached.");
             pthread_t t;
             pthread_create(&t, nullptr, inject_thread, nullptr);
             pthread_detach(t);
