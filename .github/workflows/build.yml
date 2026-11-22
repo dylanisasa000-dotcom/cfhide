@@ -18,4 +18,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: zygisk-cfhide
-        path: build/libzygisk_cfhide.so
+        path: build/zygisk_cfhide.so
