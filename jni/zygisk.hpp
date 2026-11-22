@@ -65,7 +65,7 @@ struct module_abi {
 
 #define REGISTER_ZYGISK_MODULE(cls) \
     extern "C" [[gnu::visibility("default")]] void zygisk_module_entry(zygisk::module_abi *abi) { \
-        abi->impl = new cls(); \
+        new (abi) zygisk::module_abi(new cls()); \
     } \
     extern "C" [[gnu::visibility("default")]] long zygisk_get_api_version() { \
         return ZYGISK_API_VERSION; \
